@@ -1,1 +1,345 @@
-local Players=game:GetService("Players")local LocalPlayer=Players.LocalPlayer local PlayerGui=LocalPlayer:WaitForChild("PlayerGui")local HttpService=game:GetService("HttpService")local TeleportService=game:GetService("TeleportService")local UserInputService=game:GetService("UserInputService")local RunService=game:GetService("RunService")local ReplicatedStorage=game:GetService("ReplicatedStorage")local iddojogo=109983668079237 local character=LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()local humanoidRootPart=character:WaitForChild("HumanoidRootPart")local plotsCache,lastPlotScan={},0 local PLOT_CACHE_TIME=2 local pathAttempts={{"Base","Spawn","Attachment","AnimalOverhead"},{"Spawn","Attachment","AnimalOverhead"},{"Attachment","AnimalOverhead"},{"AnimalOverhead"}} local netService pcall(function() netService=require(ReplicatedStorage:WaitForChild("Packages").Net) end) local autoInProgress,loopTeleportConnection,prematureDeathConnection=false,nil,nil local targetPosition,isLoopTeleporting=nil,false local function parseGeneration(generationText)if not generationText then return 0 end local textStr=tostring(generationText) local multipliers={B=1e9,b=1e9,M=1e6,m=1e6,K=1e3,k=1e3} local timerPattern1,timerPattern2,numberPattern="%d+m%s*%d+s","%d+:%d+","%d+%.?%d*" if textStr:find(timerPattern1)or textStr:find(timerPattern2)then return 0 end local cleanText=textStr:gsub("[$,/s ]","") local number=tonumber(cleanText:match(numberPattern)) if not number then return 0 end for suffix,mult in pairs(multipliers)do if textStr:find(suffix)then return number*mult end end return number end local function getTextFromObject(obj)if not obj then return nil end local success,value=pcall(function() return obj.Text end) if success and value then return tostring(value) end success,value=pcall(function() return obj.Value end) if success and value then return tostring(value) end return tostring(obj) end local function findPlotsInWorkspace() local currentTime=tick() if currentTime-lastPlotScan<PLOT_CACHE_TIME and #plotsCache>0 then return plotsCache end plotsCache={} lastPlotScan=currentTime local plotsFolder=workspace:FindFirstChild("Plots") if not plotsFolder then for _,child in pairs(workspace:GetChildren())do if child.Name:lower():find("plot")then plotsFolder=child break end end end if plotsFolder then for _,child in pairs(plotsFolder:GetChildren())do if child:IsA("Model")then plotsCache[#plotsCache+1]=child end end end return plotsCache end local function scanSinglePodium(plot,podiumNumber)local success,animalData=pcall(function() local animalPodiums=plot:FindFirstChild("AnimalPodiums") if not animalPodiums then for _,child in pairs(plot:GetChildren())do if child.Name:lower():find("podium")or child.Name:lower():find("animal")then animalPodiums=child break end end end if not animalPodiums then return nil end local podium=animalPodiums:FindFirstChild(tostring(podiumNumber)) if not podium then return nil end local animalOverhead for i=1,#pathAttempts do local current=podium local valid=true for j=1,#pathAttempts[i] do current=current:FindFirstChild(pathAttempts[i][j]) if not current then valid=false break end end if valid then animalOverhead=current break end end if not animalOverhead then return nil end local generation=animalOverhead:FindFirstChild("Generation") local displayName=animalOverhead:FindFirstChild("DisplayName") if not generation or not displayName then return nil end local generationValue=getTextFromObject(generation) local displayNameValue=getTextFromObject(displayName) local coords local base=podium:FindFirstChild("Base") if base and base:IsA("BasePart")then coords=base.Position else for _,child in pairs(podium:GetDescendants())do if child:IsA("BasePart")then coords=child.Position break end end end if not coords then return nil end return {generation=generationValue,displayName=displayNameValue,plotName=plot.Name,podiumNumber=podiumNumber,parsedValue=parseGeneration(generationValue),coordinates=coords} end) return success and animalData or nil end local function fastScan() local plots=findPlotsInWorkspace() if #plots==0 then return nil end local highestGeneration=0 local highestAnimal=nil for _,plot in pairs(plots)do for podium=1,23 do local animal=scanSinglePodium(plot,podium) if animal and animal.parsedValue>highestGeneration then highestGeneration=animal.parsedValue highestAnimal=animal end end end return highestAnimal end local function updateStatusLabel(text) if statusLabel and statusLabel.Parent then statusLabel.Text=tostring(text) end end local function doLoopTeleport(position) if not position or not character then return end targetPosition=Vector3.new(position.X,position.Y+5,position.Z) isLoopTeleporting=true if loopTeleportConnection then loopTeleportConnection:Disconnect() end loopTeleportConnection=RunService.Heartbeat:Connect(function() if not isLoopTeleporting or not character then return end local hrp=character:FindFirstChild("HumanoidRootPart") if hrp then hrp.CFrame=CFrame.new(targetPosition) end end) updateStatusLabel("LOCKED TO POSITION!") end local function stopLoopTeleport() isLoopTeleporting=false targetPosition=nil if loopTeleportConnection then loopTeleportConnection:Disconnect() loopTeleportConnection=nil end updateStatusLabel("Loop TP stopped") end local function autoEquipQuantumCloner() if character then local tool=character:FindFirstChildOfClass("Tool") if tool then local n=tool.Name:lower() if n:find("quantum")or n:find("clone")then return true end end end local backpack=LocalPlayer:FindFirstChild("Backpack") if backpack then for _,tool in pairs(backpack:GetChildren())do if tool:IsA("Tool")then local n=tool.Name:lower() if n:find("quantum")or n:find("clone")then if character and character:FindFirstChildOfClass("Humanoid")then character.Humanoid:EquipTool(tool) return true end end end end end return false end local function instantClone() spawn(function() if netService then pcall(function() netService:RemoteEvent("UseItem"):FireServer() end) end if character then local tool=character:FindFirstChildOfClass("Tool") if tool and tool.Name:lower():find("quantum")then pcall(function() tool:Activate() end) end end end) end local function handlePrematureDeath() if autoInProgress then updateStatusLabel("Premature death - placing clone...") spawn(function() wait(0.15) for i=1,5 do instantClone() wait(0.15) end stopLoopTeleport() wait(1.5) autoInProgress=false updateStatusLabel("Ready") end) end end local function runFullAuto() if autoInProgress then return end spawn(function() autoInProgress=true updateStatusLabel("Scanning...") local bestAnimal=fastScan() if not bestAnimal then updateStatusLabel("No animals found") autoInProgress=false return end updateStatusLabel("Found: "..bestAnimal.displayName) wait(0.2) updateStatusLabel("Equipping cloner...") autoEquipQuantumCloner() if character and character:FindFirstChild("Humanoid")then prematureDeathConnection=character.Humanoid.Died:Connect(handlePrematureDeath) end updateStatusLabel("Teleporting...") doLoopTeleport(bestAnimal.coordinates) wait(1) updateStatusLabel("Complete!") autoInProgress=false end) end local ScreenGui=Instance.new("ScreenGui") ScreenGui.Parent=PlayerGui local function criarPainel() local Frame=Instance.new("Frame") Frame.Size=UDim2.new(0,320,0,180) Frame.Position=UDim2.new(0.5,-160,0.5,-90) Frame.BackgroundColor3=Color3.fromRGB(25,25,25) Frame.BackgroundTransparency=0.2 Frame.BorderSizePixel=3 Frame.BorderColor3=Color3.fromRGB(150,0,255) Frame.Active=true Frame.Draggable=true Frame.Parent=ScreenGui local UICorner=Instance.new("UICorner",Frame) UICorner.CornerRadius=UDim.new(0,12) local Title=Instance.new("TextLabel") Title.Size=UDim2.new(1,0,0,40) Title.Position=UDim2.new(0,0,0,10) Title.BackgroundTransparency=1 Title.Text="Hop Los Manitos 🐵🐺" Title.Font=Enum.Font.SourceSansBold Title.TextSize=24 Title.TextColor3=Color3.fromRGB(255,255,255) Title.Parent=Frame local TikTokLabel=Instance.new("TextLabel") TikTokLabel.Size=UDim2.new(1,0,0,20) TikTokLabel.Position=UDim2.new(0,0,0,50) TikTokLabel.BackgroundTransparency=1 TikTokLabel.Text="TikTok: @losmanitos777" TikTokLabel.TextColor3=Color3.fromRGB(180,180,255) TikTokLabel.Font=Enum.Font.SourceSans TikTokLabel.TextSize=16 TikTokLabel.Parent=Frame local DiscordLabel=Instance.new("TextLabel") DiscordLabel.Size=UDim2.new(1,0,0,20) DiscordLabel.Position=UDim2.new(0,0,0,70) DiscordLabel.BackgroundTransparency=1 DiscordLabel.Text="Discord: https://discord.gg/zvv5sZYg" DiscordLabel.TextColor3=Color3.fromRGB(180,180,255) DiscordLabel.Font=Enum.Font.SourceSans DiscordLabel.TextSize=16 DiscordLabel.Parent=Frame local function createButton(parent,text,yPos) local btn=Instance.new("TextButton") btn.Size=UDim2.new(0.8,0,0,40) btn.Position=UDim2.new(0.1,0,0,yPos) btn.BackgroundColor3=Color3.fromRGB(50,50,50) btn.Text=text btn.TextColor3=Color3.fromRGB(255,255,255) btn.Font=Enum.Font.SourceSansBold btn.TextSize=20 btn.Parent=parent local corner=Instance.new("UICorner",btn) corner.CornerRadius=UDim.new(0,8) btn.MouseEnter:Connect(function() btn.BackgroundColor3=Color3.fromRGB(150,0,255) end) btn.MouseLeave:Connect(function() btn.BackgroundColor3=Color3.fromRGB(50,50,50) end) return btn end local ButtonHop=createButton(Frame,"Iniciar Hop",100) ButtonHop.MouseButton1Click:Connect(function() local servidores={} local success,response=pcall(function() return game:HttpGet("https://games.roblox.com/v1/games/"..iddojogo.."/servers/Public?sortOrder=Asc&limit=100") end) if success then local data=HttpService:JSONDecode(response) for _,server in pairs(data.data)do if server.playing<server.maxPlayers then table.insert(servidores,server.id) end end end if #servidores>0 then TeleportService:TeleportToPlaceInstance(iddojogo,servidores[math.random(1,#servidores)],LocalPlayer) else game.StarterGui:SetCore("SendNotification",{Title="Hop",Text="Nenhum servidor disponível.",Duration=5}) end end) local ButtonBrain=createButton(Frame,"Brain Mais Caro",150) ButtonBrain.MouseButton1Click:Connect(function() runFullAuto() end) local MinBtn=Instance.new("TextButton") MinBtn.Size=UDim2.new(0,40,0,20) MinBtn.Position=UDim2.new(1,-45,0,5) MinBtn.Text="–" MinBtn.Font=Enum.Font.SourceSansBold MinBtn.TextSize=20 MinBtn.BackgroundColor3=Color3.fromRGB(150,0,255) MinBtn.TextColor3=Color3.fromRGB(255,255,255) MinBtn.Parent=Frame MinBtn.MouseButton1Click:Connect(function() Frame.Visible=not Frame.Visible MinBtn.Text=Frame.Visible and "–" or "+" end) end criarPainel()
+-- Painel Hop Los Manitos 🐵🐺 (Completo)
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local iddojogo = 109983668079237
+
+-- Variáveis Brain Mais Caro
+local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+local plotsCache, lastPlotScan = {}, 0
+local PLOT_CACHE_TIME = 2
+local pathAttempts = {{"Base","Spawn","Attachment","AnimalOverhead"},{"Spawn","Attachment","AnimalOverhead"},{"Attachment","AnimalOverhead"},{"AnimalOverhead"}}
+local netService
+pcall(function() netService = require(ReplicatedStorage:WaitForChild("Packages").Net) end)
+local autoInProgress, loopTeleportConnection, prematureDeathConnection = false, nil, nil
+local targetPosition, isLoopTeleporting = nil, false
+
+-- Funções Brain Mais Caro
+local function parseGeneration(generationText)
+    if not generationText then return 0 end
+    local textStr = tostring(generationText)
+    local multipliers = {B = 1e9, b = 1e9, M = 1e6, m = 1e6, K = 1e3, k = 1e3}
+    local timerPattern1, timerPattern2, numberPattern = "%d+m%s*%d+s", "%d+:%d+", "%d+%.?%d*"
+    if textStr:find(timerPattern1) or textStr:find(timerPattern2) then return 0 end
+    local cleanText = textStr:gsub("[$,/s ]", "")
+    local number = tonumber(cleanText:match(numberPattern))
+    if not number then return 0 end
+    for suffix, mult in pairs(multipliers) do
+        if textStr:find(suffix) then return number * mult end
+    end
+    return number
+end
+
+local function getTextFromObject(obj)
+    if not obj then return nil end
+    local success, value = pcall(function() return obj.Text end)
+    if success and value then return tostring(value) end
+    success, value = pcall(function() return obj.Value end)
+    if success and value then return tostring(value) end
+    return tostring(obj)
+end
+
+local function findPlotsInWorkspace()
+    local currentTime = tick()
+    if currentTime - lastPlotScan < PLOT_CACHE_TIME and #plotsCache > 0 then
+        return plotsCache
+    end
+    plotsCache = {}
+    lastPlotScan = currentTime
+    local plotsFolder = workspace:FindFirstChild("Plots")
+    if not plotsFolder then
+        for _, child in pairs(workspace:GetChildren()) do
+            if child.Name:lower():find("plot") then plotsFolder = child break end
+        end
+    end
+    if plotsFolder then
+        for _, child in pairs(plotsFolder:GetChildren()) do
+            if child:IsA("Model") then
+                plotsCache[#plotsCache + 1] = child
+            end
+        end
+    end
+    return plotsCache
+end
+
+local function scanSinglePodium(plot, podiumNumber)
+    local success, animalData = pcall(function()
+        local animalPodiums = plot:FindFirstChild("AnimalPodiums")
+        if not animalPodiums then
+            for _, child in pairs(plot:GetChildren()) do
+                if child.Name:lower():find("podium") or child.Name:lower():find("animal") then
+                    animalPodiums = child
+                    break
+                end
+            end
+        end
+        if not animalPodiums then return nil end
+        local podium = animalPodiums:FindFirstChild(tostring(podiumNumber))
+        if not podium then return nil end
+        local animalOverhead
+        for i=1,#pathAttempts do
+            local current = podium
+            local valid = true
+            for j=1,#pathAttempts[i] do
+                current = current:FindFirstChild(pathAttempts[i][j])
+                if not current then valid=false break end
+            end
+            if valid then animalOverhead=current break end
+        end
+        if not animalOverhead then return nil end
+        local generation = animalOverhead:FindFirstChild("Generation")
+        local displayName = animalOverhead:FindFirstChild("DisplayName")
+        if not generation or not displayName then return nil end
+        local generationValue = getTextFromObject(generation)
+        local displayNameValue = getTextFromObject(displayName)
+        local coords
+        local base = podium:FindFirstChild("Base")
+        if base and base:IsA("BasePart") then coords=base.Position
+        else
+            for _, child in pairs(podium:GetDescendants()) do
+                if child:IsA("BasePart") then coords=child.Position break end
+            end
+        end
+        if not coords then return nil end
+        return {generation=generationValue, displayName=displayNameValue, plotName=plot.Name, podiumNumber=podiumNumber, parsedValue=parseGeneration(generationValue), coordinates=coords}
+    end)
+    return success and animalData or nil
+end
+
+local function fastScan()
+    local plots = findPlotsInWorkspace()
+    if #plots==0 then return nil end
+    local highestGeneration = 0
+    local highestAnimal = nil
+    for _, plot in pairs(plots) do
+        for podium=1,23 do
+            local animal = scanSinglePodium(plot,podium)
+            if animal and animal.parsedValue>highestGeneration then
+                highestGeneration = animal.parsedValue
+                highestAnimal = animal
+            end
+        end
+    end
+    return highestAnimal
+end
+
+local function updateStatusLabel(text)
+    if statusLabel and statusLabel.Parent then statusLabel.Text=tostring(text) end
+end
+
+local function doLoopTeleport(position)
+    if not position or not character then return end
+    targetPosition=Vector3.new(position.X,position.Y+5,position.Z)
+    isLoopTeleporting=true
+    if loopTeleportConnection then loopTeleportConnection:Disconnect() end
+    loopTeleportConnection = RunService.Heartbeat:Connect(function()
+        if not isLoopTeleporting or not character then return end
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then hrp.CFrame=CFrame.new(targetPosition) end
+    end)
+    updateStatusLabel("LOCKED TO POSITION!")
+end
+
+local function stopLoopTeleport()
+    isLoopTeleporting=false
+    targetPosition=nil
+    if loopTeleportConnection then loopTeleportConnection:Disconnect() loopTeleportConnection=nil end
+    updateStatusLabel("Loop TP stopped")
+end
+
+local function autoEquipQuantumCloner()
+    if character then
+        local tool = character:FindFirstChildOfClass("Tool")
+        if tool then
+            local n = tool.Name:lower()
+            if n:find("quantum") or n:find("clone") then return true end
+        end
+    end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        for _, tool in pairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                local n=tool.Name:lower()
+                if n:find("quantum") or n:find("clone") then
+                    if character and character:FindFirstChildOfClass("Humanoid") then
+                        character.Humanoid:EquipTool(tool)
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function instantClone()
+    spawn(function()
+        if netService then pcall(function() netService:RemoteEvent("UseItem"):FireServer() end) end
+        if character then
+            local tool = character:FindFirstChildOfClass("Tool")
+            if tool and tool.Name:lower():find("quantum") then
+                pcall(function() tool:Activate() end)
+            end
+        end
+    end)
+end
+
+local function handlePrematureDeath()
+    if autoInProgress then
+        updateStatusLabel("Premature death - placing clone...")
+        spawn(function()
+            wait(0.15)
+            for i=1,5 do instantClone() wait(0.15) end
+            stopLoopTeleport()
+            wait(1.5)
+            autoInProgress=false
+            updateStatusLabel("Ready")
+        end)
+    end
+end
+
+local function runFullAuto()
+    if autoInProgress then return end
+    spawn(function()
+        autoInProgress=true
+        updateStatusLabel("Scanning...")
+        local bestAnimal = fastScan()
+        if not bestAnimal then updateStatusLabel("No animals found") autoInProgress=false return end
+        updateStatusLabel("Found: "..bestAnimal.displayName)
+        wait(0.2)
+        updateStatusLabel("Equipping cloner...")
+        autoEquipQuantumCloner()
+        if character and character:FindFirstChild("Humanoid") then
+            prematureDeathConnection = character.Humanoid.Died:Connect(handlePrematureDeath)
+        end
+        updateStatusLabel("Teleporting...")
+        doLoopTeleport(bestAnimal.coordinates)
+        wait(1)
+        updateStatusLabel("Complete!")
+        autoInProgress=false
+    end)
+end
+
+-- ===========================================================
+-- Painel Hop Los Manitos 🐵🐺 (TikTok + Discord + Brain Mais Caro + Minimizar)
+-- ===========================================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Parent = PlayerGui
+
+local function criarPainel()
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 320, 0, 180)
+    Frame.Position = UDim2.new(0.5, -160, 0.5, -90)
+    Frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+    Frame.BackgroundTransparency=0.2
+    Frame.BorderSizePixel=3
+    Frame.BorderColor3=Color3.fromRGB(150,0,255)
+    Frame.Active=true
+    Frame.Draggable=true
+    Frame.Parent=ScreenGui
+    local UICorner = Instance.new("UICorner",Frame)
+    UICorner.CornerRadius=UDim.new(0,12)
+
+    -- Título
+    local Title = Instance.new("TextLabel")
+    Title.Size=UDim2.new(1,0,0,40)
+    Title.Position=UDim2.new(0,0,0,10)
+    Title.BackgroundTransparency=1
+    Title.Text="Hop Los Manitos 🐵🐺"
+    Title.Font=Enum.Font.SourceSansBold
+    Title.TextSize=24
+    Title.TextColor3=Color3.fromRGB(255,255,255)
+    Title.Parent=Frame
+
+    -- TikTok
+    local TikTokLabel = Instance.new("TextLabel")
+    TikTokLabel.Size=UDim2.new(1,0,0,20)
+    TikTokLabel.Position=UDim2.new(0,0,0,50)
+    TikTokLabel.BackgroundTransparency=1
+    TikTokLabel.Text="TikTok: @losmanitos777"
+    TikTokLabel.TextColor3=Color3.fromRGB(180,180,255)
+    TikTokLabel.Font=Enum.Font.SourceSans
+    TikTokLabel.TextSize=16
+    TikTokLabel.Parent=Frame
+
+    -- Discord
+    local DiscordLabel = Instance.new("TextLabel")
+    DiscordLabel.Size=UDim2.new(1,0,0,20)
+    DiscordLabel.Position=UDim2.new(0,0,0,70)
+    DiscordLabel.BackgroundTransparency=1
+    DiscordLabel.Text="Discord: https://discord.gg/zvv5sZYg"
+    DiscordLabel.TextColor3=Color3.fromRGB(180,180,255)
+    DiscordLabel.Font=Enum.Font.SourceSans
+    DiscordLabel.TextSize=16
+    DiscordLabel.Parent=Frame
+
+    -- Função para criar botões
+    local function createButton(parent,text,yPos)
+        local btn = Instance.new("TextButton")
+        btn.Size=UDim2.new(0.8,0,0,40)
+        btn.Position=UDim2.new(0.1,0,0,yPos)
+        btn.BackgroundColor3=Color3.fromRGB(50,50,50)
+        btn.Text=text
+        btn.TextColor3=Color3.fromRGB(255,255,255)
+        btn.Font=Enum.Font.SourceSansBold
+        btn.TextSize=20
+        btn.Parent=parent
+        local corner = Instance.new("UICorner",btn)
+        corner.CornerRadius=UDim.new(0,8)
+        btn.MouseEnter:Connect(function() btn.BackgroundColor3=Color3.fromRGB(150,0,255) end)
+        btn.MouseLeave:Connect(function() btn.BackgroundColor3=Color3.fromRGB(50,50,50) end)
+        return btn
+    end
+
+    -- Hop
+    local ButtonHop = createButton(Frame,"Iniciar Hop",100)
+    ButtonHop.MouseButton1Click:Connect(function()
+        local servidores = {}
+        local success,response = pcall(function()
+            return game:HttpGet("https://games.roblox.com/v1/games/"..iddojogo.."/servers/Public?sortOrder=Asc&limit=100")
+        end)
+        if success then
+            local data = HttpService:JSONDecode(response)
+            for _,server in pairs(data.data) do
+                if server.playing<server.maxPlayers then
+                    table.insert(servidores,server.id)
+                end
+            end
+        end
+        if #servidores>0 then
+            TeleportService:TeleportToPlaceInstance(iddojogo,servidores[math.random(1,#servidores)],LocalPlayer)
+        else
+            game.StarterGui:SetCore("SendNotification",{Title="Hop",Text="Nenhum servidor disponível.",Duration=5})
+        end
+    end)
+
+    -- Brain Mais Caro
+    local ButtonBrain = createButton(Frame,"Brain Mais Caro",150)
+    ButtonBrain.MouseButton1Click:Connect(function()
+        runFullAuto()
+    end)
+
+    -- Botão Minimizar
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size=UDim2.new(0,40,0,20)
+    MinBtn.Position=UDim2.new(1,-45,0,5)
+    MinBtn.Text="–"
+    MinBtn.Font=Enum.Font.SourceSansBold
+    MinBtn.TextSize=20
+    MinBtn.BackgroundColor3=Color3.fromRGB(150,0,255)
+    MinBtn.TextColor3=Color3.fromRGB(255,255,255)
+    MinBtn.Parent=Frame
+    MinBtn.MouseButton1Click:Connect(function()
+        Frame.Visible = not Frame.Visible
+        MinBtn.Text = Frame.Visible and "–" or "+"
+    end)
+end
+
+criarPainel()
